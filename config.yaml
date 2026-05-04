@@ -1,5 +1,5 @@
 # All knobs in one place. Override per-run with --config or by editing this file.
-run_id: smoke_09
+run_id: smoke_10
 seed: 42
 
 input:
@@ -18,11 +18,17 @@ generation:
   ip_adapter_image_encoder: laion/CLIP-ViT-H-14-laion2B-s32B-b79K
 
   width: 512
-  height: 512
+  height: 768
   steps: 25
   guidance_scale: 7.5
-  controlnet_scale: 0.8
-  ip_adapter_scale: 1.0
+  # Lowered from 0.8 — full-body pose at 512×768 makes the face ~80 px tall;
+  # at 0.8 ControlNet locked the model into pixel-exact pose but prevented it
+  # from rendering a coherent face. 0.5 keeps body adherence, frees the face.
+  controlnet_scale: 0.5
+  # Lowered from 1.0 — combined with Plus v2 CLIP shortcut at scale 1.0, full
+  # IP-Adapter strength was over-injecting the close-up face crop into every
+  # cross-attn and washing out the spatial composition. 0.7 is the sweet spot.
+  ip_adapter_scale: 0.7
 
   context_frames: 16
   context_overlap: 4

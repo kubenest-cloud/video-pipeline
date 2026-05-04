@@ -5,6 +5,14 @@ Reads `input.pose_source` (mp4 or directory of frames), samples it down to
 
     outputs/<run_id>/poses/0001.png ... NNNN.png   (skeletons on black bg)
     outputs/<run_id>/poses/skeleton.json           (per-frame metadata)
+    outputs/<run_id>/poses/face_bboxes.json        (per-frame face bbox in
+                                                    output (W, H) space; fed
+                                                    to stage 3's detailer pass)
+
+Face landmarks are computed but NOT drawn on the skeleton — at full-body
+framing the 68 face keypoints cluster sub-pixel, which forces ControlNet
+to render the face in a region too small for SD1.5's 1/8 latent space.
+The bbox is preserved separately so the detailer can fix faces post-hoc.
 """
 from __future__ import annotations
 
@@ -46,6 +54,48 @@ def source_native_fps(src: Path) -> float:
     return float(meta.get("fps", 30.0))
 
 
+def _face_bbox_in_output_space(
+    keypoints: np.ndarray, scores: np.ndarray, src_w: int, src_h: int, out_w: int, out_h: int
+) -> list[int] | None:
+    """Tight face bbox per detected subject from rtmlib's 68 face keypoints,
+    mapped from source pixel space to (out_w, out_h) — the same space stage 3
+    will inpaint in. Skeleton output is a non-aspect-preserving stretch from
+    src to (out_w, out_h), so we use independent x/y scale factors here too.
+    Returns the largest-area face's [x1, y1, x2, y2], or None if nothing met
+    the confidence threshold. Box is enlarged 1.5× (max dim, square) so the
+    detailer has skin/hair context around the face for a believable inpaint.
+    """
+    if keypoints.ndim < 3 or keypoints.shape[1] < 92:
+        return None
+    face_kpts = keypoints[:, 24:92, :]   # (N, 68, 2)
+    face_scores = scores[:, 24:92]        # (N, 68)
+    valid = face_scores > 0.3
+
+    best_area = 0
+    best: list[int] | None = None
+    for i in range(face_kpts.shape[0]):
+        if not valid[i].any():
+            continue
+        pts = face_kpts[i][valid[i]]
+        x1, y1 = pts.min(axis=0)
+        x2, y2 = pts.max(axis=0)
+        area = (x2 - x1) * (y2 - y1)
+        if area <= best_area:
+            continue
+        best_area = area
+        sx, sy = out_w / src_w, out_h / src_h
+        cx, cy = (x1 + x2) / 2 * sx, (y1 + y2) / 2 * sy
+        w, h = (x2 - x1) * sx, (y2 - y1) * sy
+        side = max(w, h) * 1.5  # square crop with context for inpaint
+        x1o = max(0, int(cx - side / 2))
+        y1o = max(0, int(cy - side / 2))
+        x2o = min(out_w, int(cx + side / 2))
+        y2o = min(out_h, int(cy + side / 2))
+        if x2o > x1o and y2o > y1o:
+            best = [x1o, y1o, x2o, y2o]
+    return best
+
+
 def main():
     args = make_argparser("01_extract_poses").parse_args()
     cfg = load_config(args.config)
@@ -76,6 +126,7 @@ def main():
     H = cfg["generation"]["height"]
 
     saved: list[dict] = []
+    bboxes: list[dict] = []
     out_idx = 0
     for src_idx, frame in iter_source_frames(src):
         if src_idx % stride != 0:
@@ -85,7 +136,25 @@ def main():
 
         # rtmlib expects BGR; iter_source_frames yields RGB.
         bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+        src_h, src_w = bgr.shape[:2]
         keypoints, scores = detector(bgr)
+
+        # Compute face bbox from face keypoints BEFORE we zero them — stage 3's
+        # detailer needs to know where to inpaint. Use the largest detected
+        # subject; bbox is in source-image pixel space, then mapped to (W, H)
+        # output space. None when no high-confidence face is found.
+        bbox = _face_bbox_in_output_space(keypoints, scores, src_w, src_h, W, H)
+
+        # Drop face keypoints. With full-body framing the face occupies ~50 px
+        # in a 512-tall frame, so the 68 facial landmarks cluster sub-pixel.
+        # ControlNet then forces SD to draw eyes/nose/mouth at exact pixel
+        # locations it can't render coherently → smeared, distorted faces.
+        # Body+hands+feet are kept; the face gets free reign for IP-Adapter
+        # FaceID identity transfer to actually drive what shows up there.
+        # rtmlib OpenPose layout (134 kpts): 0-17 body, 18-23 feet, 24-91 face,
+        # 92-133 hands. Zeroing scores below kpt_thr drops them at draw time.
+        if scores.shape[-1] >= 92:
+            scores[..., 24:92] = 0.0
         canvas = np.zeros_like(bgr)
         canvas = draw_skeleton(canvas, keypoints, scores, openpose_skeleton=True, kpt_thr=0.3)
         skeleton = Image.fromarray(cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB)).resize((W, H), Image.LANCZOS)
@@ -93,6 +162,7 @@ def main():
         skeleton.save(out_path)
 
         saved.append({"frame": out_idx + 1, "src_idx": src_idx, "path": str(out_path.name)})
+        bboxes.append({"frame": out_idx + 1, "bbox": bbox})
         out_idx += 1
         if out_idx % 8 == 0:
             log.info(f"  …{out_idx}/{n_target} pose frames")
@@ -103,12 +173,16 @@ def main():
             log.error("no frames produced — aborting")
             sys.exit(1)
         last = paths.poses / f"{out_idx:04d}.png"
+        last_bbox = bboxes[-1]["bbox"] if bboxes else None
         for i in range(out_idx, n_target):
             (paths.poses / f"{i + 1:04d}.png").write_bytes(last.read_bytes())
             saved.append({"frame": i + 1, "src_idx": -1, "path": last.name, "padded": True})
+            bboxes.append({"frame": i + 1, "bbox": last_bbox, "padded": True})
 
     (paths.poses / "skeleton.json").write_text(json.dumps(saved, indent=2))
-    log.info(f"wrote {n_target} pose frames to {paths.poses}")
+    (paths.poses / "face_bboxes.json").write_text(json.dumps(bboxes, indent=2))
+    n_with_face = sum(1 for b in bboxes if b["bbox"] is not None)
+    log.info(f"wrote {n_target} pose frames to {paths.poses} ({n_with_face} with face bbox)")
 
 
 if __name__ == "__main__":
