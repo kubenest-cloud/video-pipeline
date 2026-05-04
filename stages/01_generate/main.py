@@ -99,38 +99,39 @@ def write_contact_sheet(frames: list[Image.Image], out_path: Path, every: int = 
 
 
 def build_pipeline(cfg: dict, log):
-    """Try WanAnimatePipeline first (purpose-built for ref-image + driving-
-    video animation, what we actually want). Fall back to WanImageToVideo if
-    the installed diffusers doesn't expose Animate yet — that path loses pose
-    adherence but still gives photoreal motion from the reference.
+    """Load WanAnimatePipeline. Fails loud if it isn't in the installed
+    diffusers build — there's no I2V fallback because I2V doesn't take a
+    driving video, and without pose conditioning the output is not what
+    this pipeline is for. Fix is documented in the error message.
     """
     g = cfg["generation"]
     model_id = g["model"]
 
-    log.info(f"loading Wan pipeline: {model_id}")
     try:
         from diffusers import WanAnimatePipeline
-        pipe = WanAnimatePipeline.from_pretrained(model_id, torch_dtype=DTYPE)
-        kind = "animate"
-    except (ImportError, AttributeError):
-        log.warning(
-            "WanAnimatePipeline not in this diffusers build — falling back to "
-            "WanImageToVideoPipeline (no in-model pose extraction). For tight "
-            "pose adherence, upgrade diffusers to >=0.34 and re-run."
+    except ImportError:
+        log.error(
+            "WanAnimatePipeline is not in the installed diffusers build. The "
+            "released wheels (0.34, 0.35) only ship WanImageToVideoPipeline, "
+            "which has no pose conditioning and is useless for this task.\n\n"
+            "Fix: install diffusers from git main, then re-sync:\n"
+            "    uv add --project stages/01_generate "
+            "'diffusers @ git+https://github.com/huggingface/diffusers.git@main'\n"
+            "    uv sync --project stages/01_generate --reinstall-package diffusers\n"
         )
-        from diffusers import WanImageToVideoPipeline
-        pipe = WanImageToVideoPipeline.from_pretrained(g["i2v_fallback_model"], torch_dtype=DTYPE)
-        kind = "i2v"
+        sys.exit(1)
 
+    log.info(f"loading WanAnimatePipeline: {model_id}")
+    pipe = WanAnimatePipeline.from_pretrained(model_id, torch_dtype=DTYPE)
     # Wan 14B is ~28 GB in bf16; even on a 48 GB A6000 we want headroom for
-    # T5 + VAE + activations across 80 frames. Sequential offload streams
-    # transformer blocks GPU↔CPU per forward and keeps peak well under 24 GB.
+    # T5 + VAE + activations across 80 frames. cpu-offload streams transformer
+    # blocks GPU↔CPU per forward and keeps peak well under 24 GB.
     pipe.enable_model_cpu_offload()
     if hasattr(pipe, "vae") and hasattr(pipe.vae, "enable_tiling"):
         pipe.vae.enable_tiling()
         log.info("vae tiling enabled (decoder fits 720p without OOM)")
-    log.info(f"pipeline ready (kind={kind})")
-    return pipe, kind
+    log.info("pipeline ready")
+    return pipe
 
 
 def main():
@@ -163,10 +164,14 @@ def main():
     src_w, src_h = _load_first_frame_size(src_path)
     log.info(f"driving video: {src_path.name} ({src_w}x{src_h})")
 
-    pipe, kind = build_pipeline(cfg, log)
+    pipe = build_pipeline(cfg, log)
 
+    driving = [_center_crop_to_aspect(f, W, H) for f in _load_driving_clip(src_path, n, g["fps_generate"], log)]
     generator = torch.Generator(device="cpu").manual_seed(int(cfg["seed"]))
-    common_kwargs = dict(
+    log.info(f"running Wan-Animate: {n} frames @ {W}x{H}, steps={g['steps']}…")
+    out = pipe(
+        reference_image=reference,
+        driving_video=driving,
         prompt=g["prompt"],
         negative_prompt=g["negative_prompt"],
         height=H,
@@ -176,16 +181,6 @@ def main():
         guidance_scale=g["guidance_scale"],
         generator=generator,
     )
-
-    if kind == "animate":
-        driving = [_center_crop_to_aspect(f, W, H) for f in _load_driving_clip(src_path, n, g["fps_generate"], log)]
-        log.info(f"running Wan-Animate: {n} frames @ {W}x{H}, steps={common_kwargs['num_inference_steps']}…")
-        out = pipe(reference_image=reference, driving_video=driving, **common_kwargs)
-    else:
-        # Pure I2V — animate from the reference. Pose source is unused; the
-        # text prompt is the only handle on motion. Documented downgrade path.
-        log.info(f"running Wan-I2V (no pose conditioning): {n} frames @ {W}x{H}…")
-        out = pipe(image=reference, **common_kwargs)
 
     frames: list[Image.Image] = out.frames[0]
     log.info(f"writing {len(frames)} frames to {paths.raw_frames}")

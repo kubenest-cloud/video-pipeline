@@ -11,9 +11,6 @@ generation:
   # first run (cached under HF_HOME). Diffusers-format repo with the
   # config.json + sharded safetensors layout the diffusers loader expects.
   model: Wan-AI/Wan2.2-Animate-14B-Diffusers
-  # Used only if WanAnimatePipeline isn't in the installed diffusers build.
-  # Loses pose adherence (no in-model pose extractor) but keeps photoreal.
-  i2v_fallback_model: Wan-AI/Wan2.2-I2V-A14B-Diffusers
 
   width: 512
   height: 768

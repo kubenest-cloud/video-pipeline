@@ -9,10 +9,11 @@ dependencies = [
     # the cu124 wheels consistent.
     "torch==2.6.0",
     "torchvision==0.21.0",
-    # Wan 2.2 pipelines (WanImageToVideoPipeline, WanAnimatePipeline) landed
-    # in diffusers 0.34. Pin a known-good range; >=0.36 dropped the legacy
-    # `vae_tiling` flag we rely on for 48GB cards.
-    "diffusers>=0.34.0,<0.36.0",
+    # WanAnimatePipeline only exists on diffusers main as of Q1 2026 — the
+    # 0.34/0.35 wheels have WanPipeline + WanImageToVideoPipeline but not
+    # Animate, so the released versions can't drive Wan-Animate. Install from
+    # git main; pin a commit when you find one that works for reproducibility.
+    "diffusers",
     # Wan ships its T5 text encoder via transformers; >=4.46 is the version
     # the Wan-AI repos test against.
     "transformers>=4.46.0,<5.0",
@@ -39,4 +40,5 @@ explicit = true
 [tool.uv.sources]
 torch = { index = "pytorch-cu124" }
 torchvision = { index = "pytorch-cu124" }
+diffusers = { git = "https://github.com/huggingface/diffusers.git", branch = "main" }
 video-pipeline-common = { path = "../../packages/common", editable = true }
