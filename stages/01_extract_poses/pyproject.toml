@@ -1,48 +1,25 @@
 [project]
 name = "stage-01-extract-poses"
 version = "0.1.0"
-description = "DW Pose skeleton extraction (controlnet_aux + OpenMMLab stack)."
+description = "DW Pose skeleton extraction (rtmlib + onnxruntime)."
 requires-python = ">=3.11,<3.12"
 dependencies = [
-    "torch==2.4.1",
-    "torchvision==0.19.1",
-    "controlnet-aux>=0.0.9",
+    # rtmlib is OpenMMLab's standalone ONNX wrapper around DWPose. It downloads
+    # the YOLOX person detector + dw-ll_ucoco_384 keypoint head on first run
+    # and runs them via onnxruntime — no mmcv/mmdet/mmpose toolchain.
+    "rtmlib>=0.0.13",
+    "onnxruntime-gpu>=1.18",
+    # opencv-python comes in as a transitive dep of rtmlib (non-headless build);
+    # don't pin opencv-python-headless here or both end up installed and the
+    # cv2 namespace collides at import.
     "imageio[ffmpeg,pyav]>=2.36.0",
     "pillow>=10.4.0",
     "numpy>=1.26,<2.0",
-    "mmengine>=0.10.0",
-    # PyPI ships only mmcv sdists for torch 2.4 / cu121 / py3.11. Prebuilt
-    # OpenMMLab wheels live on a separate index that uv doesn't traverse, so
-    # we build mmcv from sdist against the local torch + CUDA toolkit. mmcv's
-    # setup.py forgets to declare its build deps and modern setuptools (>=80)
-    # removed `pkg_resources` — see [tool.uv.extra-build-dependencies] below.
-    # First sync takes 5–15 min; requires nvcc on PATH.
-    "mmcv==2.1.0",
-    "mmdet>=3.3.0",
-    "mmpose>=1.3.0",
-    # mmpose pulls in chumpy; chumpy's setup.py imports `pip` from the
-    # isolated build env (which doesn't have it), so we declare its build deps.
-    "chumpy",
-    # mmpose.apis imports `pkg_resources` directly, which setuptools 80+
-    # no longer exposes by default. Pin <80 so pkg_resources stays importable.
-    "setuptools<80",
     "video-pipeline-common",
 ]
 
 [tool.uv]
 environments = ["sys_platform == 'linux' and platform_machine == 'x86_64'"]
-no-binary-package = ["mmcv"]
-
-[tool.uv.extra-build-dependencies]
-chumpy = ["pip", "wheel", "setuptools<80"]
-mmcv = ["torch==2.4.1", "wheel", "setuptools<80"]
-
-[[tool.uv.index]]
-name = "pytorch-cu121"
-url = "https://download.pytorch.org/whl/cu121"
-explicit = true
 
 [tool.uv.sources]
-torch = { index = "pytorch-cu121" }
-torchvision = { index = "pytorch-cu121" }
 video-pipeline-common = { path = "../../packages/common", editable = true }

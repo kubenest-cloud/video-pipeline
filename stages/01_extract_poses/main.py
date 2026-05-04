@@ -4,7 +4,7 @@ Reads `input.pose_source` (mp4 or directory of frames), samples it down to
 `generation.fps_generate`, runs DW Pose on each sampled frame, and writes:
 
     outputs/<run_id>/poses/0001.png ... NNNN.png   (skeletons on black bg)
-    outputs/<run_id>/poses/skeleton.json           (keypoints, for reference)
+    outputs/<run_id>/poses/skeleton.json           (per-frame metadata)
 """
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ import json
 import sys
 from pathlib import Path
 
+import cv2
 import imageio.v3 as iio
 import numpy as np
 from PIL import Image
@@ -66,10 +67,10 @@ def main():
     stride = max(1, round(native_fps / target_fps))
     log.info(f"native_fps={native_fps:.2f} target_fps={target_fps} stride={stride} target_frames={n_target}")
 
-    from controlnet_aux import DWposeDetector
+    from rtmlib import Wholebody, draw_skeleton
 
-    log.info("loading DW Pose detector (controlnet_aux.DWposeDetector)…")
-    detector = DWposeDetector()
+    log.info("loading DW Pose detector (rtmlib.Wholebody, onnxruntime, cuda)…")
+    detector = Wholebody(to_openpose=True, mode="balanced", backend="onnxruntime", device="cuda")
 
     W = cfg["generation"]["width"]
     H = cfg["generation"]["height"]
@@ -82,8 +83,12 @@ def main():
         if out_idx >= n_target:
             break
 
-        skeleton = detector(frame, output_type="pil", include_face=True, include_hand=True)
-        skeleton = skeleton.resize((W, H), Image.LANCZOS)
+        # rtmlib expects BGR; iter_source_frames yields RGB.
+        bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+        keypoints, scores = detector(bgr)
+        canvas = np.zeros_like(bgr)
+        canvas = draw_skeleton(canvas, keypoints, scores, openpose_skeleton=True, kpt_thr=0.3)
+        skeleton = Image.fromarray(cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB)).resize((W, H), Image.LANCZOS)
         out_path = paths.poses / f"{out_idx + 1:04d}.png"
         skeleton.save(out_path)
 

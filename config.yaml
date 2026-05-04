@@ -1,5 +1,5 @@
 # All knobs in one place. Override per-run with --config or by editing this file.
-run_id: smoke_07
+run_id: smoke_09
 seed: 42
 
 input:
