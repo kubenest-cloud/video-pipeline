@@ -21,10 +21,12 @@ generation:
   height: 768
   steps: 25
   guidance_scale: 7.5
-  # Lowered from 0.8 — full-body pose at 512×768 makes the face ~80 px tall;
-  # at 0.8 ControlNet locked the model into pixel-exact pose but prevented it
-  # from rendering a coherent face. 0.5 keeps body adherence, frees the face.
-  controlnet_scale: 0.5
+  # smoke_11: at 0.5 the model reinterpreted clearly-frontal skeletons as
+  # profile views (head + horizontal shoulders + both arms visible got
+  # rendered side-on). 0.75 restores body-orientation adherence while still
+  # letting SD render the face freely (face landmarks are stripped in stage 1
+  # and the detailer pass owns face quality, so we don't need 0.8 anymore).
+  controlnet_scale: 0.75
   # Lowered from 1.0 — combined with Plus v2 CLIP shortcut at scale 1.0, full
   # IP-Adapter strength was over-injecting the close-up face crop into every
   # cross-attn and washing out the spatial composition. 0.7 is the sweet spot.

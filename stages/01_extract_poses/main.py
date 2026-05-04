@@ -54,15 +54,25 @@ def source_native_fps(src: Path) -> float:
     return float(meta.get("fps", 30.0))
 
 
+def _letterbox_fit(src_w: int, src_h: int, out_w: int, out_h: int) -> tuple[float, int, int]:
+    """Aspect-preserving fit. Returns (scale, x_offset, y_offset) where
+    src→out is `(x*scale + x_off, y*scale + y_off)`. The unused axis becomes
+    a black letterbox band on the output canvas.
+    """
+    scale = min(out_w / src_w, out_h / src_h)
+    x_off = (out_w - int(round(src_w * scale))) // 2
+    y_off = (out_h - int(round(src_h * scale))) // 2
+    return scale, x_off, y_off
+
+
 def _face_bbox_in_output_space(
     keypoints: np.ndarray, scores: np.ndarray, src_w: int, src_h: int, out_w: int, out_h: int
 ) -> list[int] | None:
     """Tight face bbox per detected subject from rtmlib's 68 face keypoints,
-    mapped from source pixel space to (out_w, out_h) — the same space stage 3
-    will inpaint in. Skeleton output is a non-aspect-preserving stretch from
-    src to (out_w, out_h), so we use independent x/y scale factors here too.
-    Returns the largest-area face's [x1, y1, x2, y2], or None if nothing met
-    the confidence threshold. Box is enlarged 1.5× (max dim, square) so the
+    mapped from source pixel space to the SAME letterboxed (out_w, out_h)
+    canvas the skeleton is drawn on (uniform scale + center offset). Returns
+    the largest-area face's [x1, y1, x2, y2], or None if nothing met the
+    confidence threshold. Box is enlarged 1.5× (max dim, square) so the
     detailer has skin/hair context around the face for a believable inpaint.
     """
     if keypoints.ndim < 3 or keypoints.shape[1] < 92:
@@ -70,6 +80,7 @@ def _face_bbox_in_output_space(
     face_kpts = keypoints[:, 24:92, :]   # (N, 68, 2)
     face_scores = scores[:, 24:92]        # (N, 68)
     valid = face_scores > 0.3
+    scale, x_off, y_off = _letterbox_fit(src_w, src_h, out_w, out_h)
 
     best_area = 0
     best: list[int] | None = None
@@ -83,9 +94,9 @@ def _face_bbox_in_output_space(
         if area <= best_area:
             continue
         best_area = area
-        sx, sy = out_w / src_w, out_h / src_h
-        cx, cy = (x1 + x2) / 2 * sx, (y1 + y2) / 2 * sy
-        w, h = (x2 - x1) * sx, (y2 - y1) * sy
+        cx = (x1 + x2) / 2 * scale + x_off
+        cy = (y1 + y2) / 2 * scale + y_off
+        w, h = (x2 - x1) * scale, (y2 - y1) * scale
         side = max(w, h) * 1.5  # square crop with context for inpaint
         x1o = max(0, int(cx - side / 2))
         y1o = max(0, int(cy - side / 2))
@@ -157,7 +168,18 @@ def main():
             scores[..., 24:92] = 0.0
         canvas = np.zeros_like(bgr)
         canvas = draw_skeleton(canvas, keypoints, scores, openpose_skeleton=True, kpt_thr=0.3)
-        skeleton = Image.fromarray(cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB)).resize((W, H), Image.LANCZOS)
+        # Aspect-preserving fit onto the (W, H) target. Force-resizing a 16:9
+        # source skeleton to a 2:3 portrait squishes shoulders horizontally —
+        # the model then reads "narrow shoulders, body in profile" and renders
+        # a side view even when the skeleton is clearly frontal. Letterbox
+        # instead so geometry survives.
+        scale, x_off, y_off = _letterbox_fit(src_w, src_h, W, H)
+        scaled_w, scaled_h = int(round(src_w * scale)), int(round(src_h * scale))
+        skeleton_src = Image.fromarray(cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB)).resize(
+            (scaled_w, scaled_h), Image.LANCZOS
+        )
+        skeleton = Image.new("RGB", (W, H), "black")
+        skeleton.paste(skeleton_src, (x_off, y_off))
         out_path = paths.poses / f"{out_idx + 1:04d}.png"
         skeleton.save(out_path)
 
