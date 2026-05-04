@@ -87,66 +87,100 @@ def _center_crop_to_aspect(img: Image.Image, target_w: int, target_h: int) -> Im
     return img.crop((x, y, x + crop_w, y + crop_h)).resize((target_w, target_h), Image.LANCZOS)
 
 
-def _prepare_animate_conditioning(
-    pipe, driving: list[Image.Image], log
-) -> tuple[list[Image.Image], list[Image.Image]]:
-    """Produce (pose_video, face_video) from the raw driving frames.
-
-    Wan-Animate's diffusers integration expects pre-rendered pose skeletons +
-    face crops, not raw RGB. The official Wan repo ships a preprocess utility
-    that runs DWPose + face detection over the driving clip. Diffusers usually
-    wraps that as `WanAnimateProcessor` (or similar); try the standard import
-    locations and fall back to raw frames if nothing's there.
-
-    The fallback is lossy — the pose encoder was trained on rendered skeleton
-    PNGs, not natural images, so it'll mis-read what the figure is doing.
-    Output will look photoreal but motion will drift from the driving clip
-    until we wire real preprocessing. Logs make the situation explicit.
+def _face_bbox_from_keypoints(
+    keypoints: "np.ndarray", scores: "np.ndarray", src_w: int, src_h: int, pad: float = 1.6
+) -> tuple[int, int, int, int] | None:
+    """Tight square face bbox from rtmlib's 68 face keypoints (indices 24:92
+    in the 134-kpt OpenPose-converted layout). Returns (x1, y1, x2, y2) in
+    source pixel space, or None if no high-confidence face was found.
     """
-    processor = None
-    for path in (
-        "diffusers.WanAnimateProcessor",
-        "diffusers.pipelines.wan.WanAnimateProcessor",
-        "diffusers.pipelines.wan.processor_wan_animate.WanAnimateProcessor",
-        "diffusers.pipelines.wan.pipeline_wan_animate.WanAnimateProcessor",
-    ):
-        try:
-            mod_name, _, cls_name = path.rpartition(".")
-            mod = __import__(mod_name, fromlist=[cls_name])
-            processor = getattr(mod, cls_name)()
-            log.info(f"using diffusers preprocessor: {path}")
-            break
-        except (ImportError, AttributeError):
+    if keypoints.ndim < 3 or keypoints.shape[1] < 92:
+        return None
+    face_kpts = keypoints[:, 24:92, :]
+    face_scores = scores[:, 24:92]
+    valid = face_scores > 0.3
+
+    best_area = 0
+    best: tuple[int, int, int, int] | None = None
+    for i in range(face_kpts.shape[0]):
+        if not valid[i].any():
             continue
+        pts = face_kpts[i][valid[i]]
+        x1, y1 = pts.min(axis=0)
+        x2, y2 = pts.max(axis=0)
+        area = (x2 - x1) * (y2 - y1)
+        if area <= best_area:
+            continue
+        best_area = area
+        cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
+        side = max(x2 - x1, y2 - y1) * pad
+        best = (
+            max(0, int(cx - side / 2)),
+            max(0, int(cy - side / 2)),
+            min(src_w, int(cx + side / 2)),
+            min(src_h, int(cy + side / 2)),
+        )
+    return best
 
-    if processor is not None:
-        # API not yet stable — try the most likely method names. If none match,
-        # log the processor's public methods so we can wire the right one.
-        for method_name in ("preprocess", "prepare", "process", "__call__"):
-            fn = getattr(processor, method_name, None)
-            if fn is None:
-                continue
-            try:
-                result = fn(driving)
-            except Exception as e:
-                log.warning(f"processor.{method_name}(driving) raised {type(e).__name__}: {e}")
-                continue
-            if isinstance(result, dict) and "pose_video" in result and "face_video" in result:
-                return result["pose_video"], result["face_video"]
-            if isinstance(result, tuple) and len(result) == 2:
-                return result[0], result[1]
-            log.warning(f"processor.{method_name} returned {type(result).__name__}; expected dict or 2-tuple")
-        public = [n for n in dir(processor) if not n.startswith("_")]
-        log.error(f"could not call WanAnimateProcessor — public attrs: {public}")
-        sys.exit(1)
 
-    log.warning(
-        "No WanAnimateProcessor found in this diffusers build. Falling back to "
-        "raw RGB frames for pose_video AND face_video — the pose encoder will "
-        "mis-read this (it expects rendered skeletons), so motion adherence "
-        "will be poor. Wire DWPose + face-crop preprocessing for real output."
-    )
-    return driving, driving
+def _prepare_animate_conditioning(
+    driving: list[Image.Image], W: int, H: int, log
+) -> tuple[list[Image.Image], list[Image.Image]]:
+    """Run DWPose on each driving frame; return (pose_video, face_video).
+
+    pose_video: rendered skeleton on black background, sized to (W, H) — what
+                Wan-Animate's pose encoder was trained on. Without this, it
+                ignores motion entirely and animates freely from the reference.
+    face_video: face crop per frame, padded ~1.6× and resized to 512×512 (Wan
+                auto-reshapes to square anyway, and the model's face encoder
+                expects a square crop centered on the face).
+
+    First call downloads ~50 MB of DW Pose weights into ~/.cache/rtmlib —
+    mount that cache (or HF_HOME) to persist across docker runs.
+    """
+    import cv2
+    from rtmlib import Wholebody, draw_skeleton
+
+    log.info("loading DW Pose detector for Wan-Animate preprocessing…")
+    detector = Wholebody(to_openpose=True, mode="balanced", backend="onnxruntime", device="cuda")
+
+    # Pre-derive a placeholder face crop (small center region, neutral gray) so
+    # frames with no detection don't break the list — Wan needs face_video and
+    # pose_video to have the same length as the driving clip.
+    placeholder_face = Image.new("RGB", (512, 512), (128, 128, 128))
+
+    pose_video: list[Image.Image] = []
+    face_video: list[Image.Image] = []
+    n_no_face = 0
+    for idx, frame in enumerate(driving):
+        bgr = cv2.cvtColor(np.asarray(frame), cv2.COLOR_RGB2BGR)
+        src_h, src_w = bgr.shape[:2]
+        keypoints, scores = detector(bgr)
+
+        # Pose: render full skeleton (body + face + hands) on a black canvas
+        # at source size, then resize to the output (W, H). Wan expects RGB.
+        canvas = np.zeros_like(bgr)
+        canvas = draw_skeleton(canvas, keypoints, scores, openpose_skeleton=True, kpt_thr=0.3)
+        pose_pil = Image.fromarray(cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB)).resize(
+            (W, H), Image.LANCZOS
+        )
+        pose_video.append(pose_pil)
+
+        # Face: crop the source frame to the face bbox, square-pad, resize 512.
+        bbox = _face_bbox_from_keypoints(keypoints, scores, src_w, src_h, pad=1.6)
+        if bbox is None:
+            n_no_face += 1
+            face_video.append(placeholder_face if not face_video else face_video[-1])
+        else:
+            face_video.append(frame.crop(bbox).resize((512, 512), Image.LANCZOS))
+
+        if (idx + 1) % 16 == 0:
+            log.info(f"  …preprocessed {idx + 1}/{len(driving)} frames")
+
+    if n_no_face:
+        log.warning(f"no face detected in {n_no_face}/{len(driving)} frames; reused previous face crop")
+    log.info(f"preprocessing done: {len(pose_video)} pose frames @ {W}x{H}, {len(face_video)} face crops @ 512x512")
+    return pose_video, face_video
 
 
 def _coerce_to_pil_list(raw, log) -> list[Image.Image]:
@@ -285,7 +319,15 @@ def main():
     params = set(sig.parameters.keys())
     log.info(f"WanAnimatePipeline.__call__ params: {sorted(params)}")
 
-    pose_video, face_video = _prepare_animate_conditioning(pipe, driving, log)
+    pose_video, face_video = _prepare_animate_conditioning(driving, W, H, log)
+
+    # Dump preprocessing outputs for inspection — if pose/face look wrong here,
+    # the 13-min generation will produce garbage, so check before paying.
+    debug_dir = paths.raw_frames.parent / "preprocess"
+    debug_dir.mkdir(parents=True, exist_ok=True)
+    write_contact_sheet(pose_video, debug_dir / "_pose_contactsheet.jpg", every=8)
+    write_contact_sheet(face_video, debug_dir / "_face_contactsheet.jpg", every=8)
+    log.info(f"wrote preprocess contact sheets → {debug_dir}/_{{pose,face}}_contactsheet.jpg")
 
     log.info(f"running Wan-Animate: {len(pose_video)} frames @ {W}x{H}, mode=animation, steps={g['steps']}…")
     call_kwargs = {

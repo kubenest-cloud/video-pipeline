@@ -7,14 +7,16 @@
 #   docker build -t video-pipeline-stage1 -f stages/01_generate/Dockerfile .
 #
 # Run. Stage 1 reads `inputs/face_ref.png` (identity) and `inputs/pose_source.mp4`
-# (motion). First run also downloads ~28 GB of HF weights (Wan2.2-Animate-14B
-# diffusers repo + T5 text encoder + VAE). Mount the shared `video-pipeline-hf`
-# volume so subsequent runs hit the cache.
+# (motion). First run downloads ~28 GB of HF weights (Wan2.2-Animate-14B +
+# T5 + VAE) into HF_HOME, plus ~50 MB of DW Pose weights into ~/.cache/rtmlib
+# for the inline pose+face preprocessing. Mount both caches so subsequent
+# runs hit them.
 #   docker run --rm --gpus all \
 #     -v "$PWD/config.yaml":/workspace/config.yaml:ro \
 #     -v "$PWD/inputs":/workspace/inputs:ro \
 #     -v "$PWD/outputs":/workspace/outputs \
 #     -v video-pipeline-hf:/root/.cache/huggingface \
+#     -v video-pipeline-rtmlib:/root/.cache/rtmlib \
 #     video-pipeline-stage1
 #
 # Tip: outputs owned by you instead of root → add `--user "$(id -u):$(id -g)"`.

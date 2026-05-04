@@ -26,6 +26,15 @@ dependencies = [
     "pillow>=10.4.0",
     "numpy>=1.26,<2.0",
     "einops>=0.8.0",
+    # Wan-Animate's `pose_video` is rendered skeletons (not raw RGB) and
+    # `face_video` is face crops — Wan ships a preprocessor we don't have
+    # access to from diffusers, so we extract both inline with DWPose.
+    # rtmlib is the same DW Pose path the deleted stage 1 used.
+    "rtmlib>=0.0.13",
+    # onnxruntime-gpu 1.18+ requires cuDNN 9 — our base image is
+    # cu12.4-cudnn-runtime which ships cuDNN 9, so this resolves.
+    "onnxruntime-gpu>=1.18.0",
+    "opencv-python-headless>=4.10.0",
     "video-pipeline-common",
 ]
 

@@ -36,13 +36,14 @@ Wan 2.2 Animate 14B. Takes one reference image (identity) plus one driving video
 docker build -t video-pipeline-stage1 -f stages/01_generate/Dockerfile .
 
 # 2. Run. First invocation downloads ~28 GB of HF weights (Wan2.2-Animate-14B
-#    + T5 text encoder + VAE). Mount the shared `video-pipeline-hf` volume so
-#    subsequent runs hit the cache.
+#    + T5 + VAE) plus ~50 MB of DW Pose weights for inline pose+face
+#    preprocessing. Mount both caches so subsequent runs hit them.
 docker run --rm --gpus all \
     -v "$PWD/config.yaml":/workspace/config.yaml:ro \
     -v "$PWD/inputs":/workspace/inputs:ro \
     -v "$PWD/outputs":/workspace/outputs \
     -v video-pipeline-hf:/root/.cache/huggingface \
+    -v video-pipeline-rtmlib:/root/.cache/rtmlib \
     video-pipeline-stage1
 
 # Optional: outputs owned by you instead of root
