@@ -54,33 +54,49 @@ def source_native_fps(src: Path) -> float:
     return float(meta.get("fps", 30.0))
 
 
-def _letterbox_fit(src_w: int, src_h: int, out_w: int, out_h: int) -> tuple[float, int, int]:
-    """Aspect-preserving fit. Returns (scale, x_offset, y_offset) where
-    src→out is `(x*scale + x_off, y*scale + y_off)`. The unused axis becomes
-    a black letterbox band on the output canvas.
+def _center_crop_fit(
+    src_w: int, src_h: int, out_w: int, out_h: int
+) -> tuple[float, int, int, int, int]:
+    """Aspect match via center-crop on src, then uniform scale to (out_w, out_h).
+    Letterboxing was preserving aspect at the cost of leaving huge black bands
+    and shrinking the figure when source aspect didn't match generation aspect
+    — model then renders at low effective resolution + invents everything in
+    the bands. Center-crop keeps the figure at full size; we cut background,
+    not the subject (assumes subject is roughly centered in frame, which is
+    the standard case for single-person clips).
+    Returns (scale, crop_x, crop_y, crop_w, crop_h).
+    Mapping src→out: `((x - crop_x) * scale, (y - crop_y) * scale)`.
     """
-    scale = min(out_w / src_w, out_h / src_h)
-    x_off = (out_w - int(round(src_w * scale))) // 2
-    y_off = (out_h - int(round(src_h * scale))) // 2
-    return scale, x_off, y_off
+    src_ratio = src_w / src_h
+    out_ratio = out_w / out_h
+    if src_ratio > out_ratio:
+        crop_h = src_h
+        crop_w = int(round(src_h * out_ratio))
+    else:
+        crop_w = src_w
+        crop_h = int(round(src_w / out_ratio))
+    crop_x = (src_w - crop_w) // 2
+    crop_y = (src_h - crop_h) // 2
+    scale = out_w / crop_w
+    return scale, crop_x, crop_y, crop_w, crop_h
 
 
 def _face_bbox_in_output_space(
     keypoints: np.ndarray, scores: np.ndarray, src_w: int, src_h: int, out_w: int, out_h: int
 ) -> list[int] | None:
     """Tight face bbox per detected subject from rtmlib's 68 face keypoints,
-    mapped from source pixel space to the SAME letterboxed (out_w, out_h)
-    canvas the skeleton is drawn on (uniform scale + center offset). Returns
-    the largest-area face's [x1, y1, x2, y2], or None if nothing met the
-    confidence threshold. Box is enlarged 1.5× (max dim, square) so the
-    detailer has skin/hair context around the face for a believable inpaint.
+    mapped from source pixel space to the SAME center-cropped (out_w, out_h)
+    canvas the skeleton is drawn on. Faces falling outside the crop region
+    return None. Returns the largest-area face's [x1, y1, x2, y2], or None
+    if nothing met the confidence threshold. Box is enlarged 1.5× (max dim,
+    square) so the detailer has skin/hair context for a believable inpaint.
     """
     if keypoints.ndim < 3 or keypoints.shape[1] < 92:
         return None
     face_kpts = keypoints[:, 24:92, :]   # (N, 68, 2)
     face_scores = scores[:, 24:92]        # (N, 68)
     valid = face_scores > 0.3
-    scale, x_off, y_off = _letterbox_fit(src_w, src_h, out_w, out_h)
+    scale, crop_x, crop_y, crop_w, crop_h = _center_crop_fit(src_w, src_h, out_w, out_h)
 
     best_area = 0
     best: list[int] | None = None
@@ -93,11 +109,15 @@ def _face_bbox_in_output_space(
         area = (x2 - x1) * (y2 - y1)
         if area <= best_area:
             continue
+        # Drop faces whose center fell into the cropped-away band.
+        cx_src, cy_src = (x1 + x2) / 2, (y1 + y2) / 2
+        if not (crop_x <= cx_src < crop_x + crop_w and crop_y <= cy_src < crop_y + crop_h):
+            continue
         best_area = area
-        cx = (x1 + x2) / 2 * scale + x_off
-        cy = (y1 + y2) / 2 * scale + y_off
+        cx = (cx_src - crop_x) * scale
+        cy = (cy_src - crop_y) * scale
         w, h = (x2 - x1) * scale, (y2 - y1) * scale
-        side = max(w, h) * 1.5  # square crop with context for inpaint
+        side = max(w, h) * 1.5
         x1o = max(0, int(cx - side / 2))
         y1o = max(0, int(cy - side / 2))
         x2o = min(out_w, int(cx + side / 2))
@@ -168,18 +188,16 @@ def main():
             scores[..., 24:92] = 0.0
         canvas = np.zeros_like(bgr)
         canvas = draw_skeleton(canvas, keypoints, scores, openpose_skeleton=True, kpt_thr=0.3)
-        # Aspect-preserving fit onto the (W, H) target. Force-resizing a 16:9
-        # source skeleton to a 2:3 portrait squishes shoulders horizontally —
-        # the model then reads "narrow shoulders, body in profile" and renders
-        # a side view even when the skeleton is clearly frontal. Letterbox
-        # instead so geometry survives.
-        scale, x_off, y_off = _letterbox_fit(src_w, src_h, W, H)
-        scaled_w, scaled_h = int(round(src_w * scale)), int(round(src_h * scale))
-        skeleton_src = Image.fromarray(cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB)).resize(
-            (scaled_w, scaled_h), Image.LANCZOS
+        # Aspect match by center-crop on src, then uniform scale to (W, H).
+        # Letterbox preserved geometry but shrunk a 16:9 source into a 2:3
+        # canvas to ~25% of frame area — model then had to invent everything
+        # in the bands and the figure ended up tiny. Center-crop keeps the
+        # subject full-frame at the cost of background on the cut axis.
+        _scale, cx, cy, cw, ch = _center_crop_fit(src_w, src_h, W, H)
+        cropped = canvas[cy:cy + ch, cx:cx + cw]
+        skeleton = Image.fromarray(cv2.cvtColor(cropped, cv2.COLOR_BGR2RGB)).resize(
+            (W, H), Image.LANCZOS
         )
-        skeleton = Image.new("RGB", (W, H), "black")
-        skeleton.paste(skeleton_src, (x_off, y_off))
         out_path = paths.poses / f"{out_idx + 1:04d}.png"
         skeleton.save(out_path)
 

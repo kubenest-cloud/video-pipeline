@@ -1,5 +1,5 @@
 # All knobs in one place. Override per-run with --config or by editing this file.
-run_id: smoke_12
+run_id: smoke_13
 seed: 42
 
 input:
@@ -20,7 +20,10 @@ generation:
   width: 512
   height: 768
   steps: 25
-  guidance_scale: 7.5
+  # AnimateDiff motion adapter pulls toward stylized output; high CFG (7.5)
+  # then burns saturation and pushes the look further into "painterly". 5.5
+  # lets Realistic Vision's photo training reassert itself.
+  guidance_scale: 5.5
   # smoke_11: at 0.5 the model reinterpreted clearly-frontal skeletons as
   # profile views (head + horizontal shoulders + both arms visible got
   # rendered side-on). 0.75 restores body-orientation adherence while still
@@ -39,10 +42,14 @@ generation:
   duration_sec: 10 # → 80 frames at 8 FPS
 
   prompt:
-    'photo of an asian man, cinematic lighting, sharp focus, detailed skin, 35mm'
+    'RAW photo of an asian man, photograph, dslr, 35mm, soft natural lighting,
+    detailed skin pores, photorealistic, professional photography, neutral
+    background, shallow depth of field'
   negative_prompt:
     'woman, female, feminine, deformed, blurry, low quality, extra limbs, bad
-    anatomy, watermark, text'
+    anatomy, watermark, text, painting, illustration, cartoon, anime, cgi, 3d
+    render, drawing, stylized, oversaturated, hdr, ornate background, cluttered,
+    busy background, decorations, lanterns'
 
 interpolation:
   target_fps: 24
