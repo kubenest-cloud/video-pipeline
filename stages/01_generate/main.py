@@ -261,7 +261,10 @@ def main():
         "generator": generator,
     }
     if "mode" in params:
-        call_kwargs["mode"] = "animation"
+        # Accepted values are "animate" (render reference person doing the
+        # driving motion) and "replace" (swap the person in the driving video
+        # for the reference; needs mask_video + background_video).
+        call_kwargs["mode"] = "animate"
     out = pipe(**call_kwargs)
 
     frames: list[Image.Image] = out.frames[0]
