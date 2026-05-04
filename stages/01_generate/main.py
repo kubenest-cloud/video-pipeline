@@ -87,6 +87,68 @@ def _center_crop_to_aspect(img: Image.Image, target_w: int, target_h: int) -> Im
     return img.crop((x, y, x + crop_w, y + crop_h)).resize((target_w, target_h), Image.LANCZOS)
 
 
+def _prepare_animate_conditioning(
+    pipe, driving: list[Image.Image], log
+) -> tuple[list[Image.Image], list[Image.Image]]:
+    """Produce (pose_video, face_video) from the raw driving frames.
+
+    Wan-Animate's diffusers integration expects pre-rendered pose skeletons +
+    face crops, not raw RGB. The official Wan repo ships a preprocess utility
+    that runs DWPose + face detection over the driving clip. Diffusers usually
+    wraps that as `WanAnimateProcessor` (or similar); try the standard import
+    locations and fall back to raw frames if nothing's there.
+
+    The fallback is lossy — the pose encoder was trained on rendered skeleton
+    PNGs, not natural images, so it'll mis-read what the figure is doing.
+    Output will look photoreal but motion will drift from the driving clip
+    until we wire real preprocessing. Logs make the situation explicit.
+    """
+    processor = None
+    for path in (
+        "diffusers.WanAnimateProcessor",
+        "diffusers.pipelines.wan.WanAnimateProcessor",
+        "diffusers.pipelines.wan.processor_wan_animate.WanAnimateProcessor",
+        "diffusers.pipelines.wan.pipeline_wan_animate.WanAnimateProcessor",
+    ):
+        try:
+            mod_name, _, cls_name = path.rpartition(".")
+            mod = __import__(mod_name, fromlist=[cls_name])
+            processor = getattr(mod, cls_name)()
+            log.info(f"using diffusers preprocessor: {path}")
+            break
+        except (ImportError, AttributeError):
+            continue
+
+    if processor is not None:
+        # API not yet stable — try the most likely method names. If none match,
+        # log the processor's public methods so we can wire the right one.
+        for method_name in ("preprocess", "prepare", "process", "__call__"):
+            fn = getattr(processor, method_name, None)
+            if fn is None:
+                continue
+            try:
+                result = fn(driving)
+            except Exception as e:
+                log.warning(f"processor.{method_name}(driving) raised {type(e).__name__}: {e}")
+                continue
+            if isinstance(result, dict) and "pose_video" in result and "face_video" in result:
+                return result["pose_video"], result["face_video"]
+            if isinstance(result, tuple) and len(result) == 2:
+                return result[0], result[1]
+            log.warning(f"processor.{method_name} returned {type(result).__name__}; expected dict or 2-tuple")
+        public = [n for n in dir(processor) if not n.startswith("_")]
+        log.error(f"could not call WanAnimateProcessor — public attrs: {public}")
+        sys.exit(1)
+
+    log.warning(
+        "No WanAnimateProcessor found in this diffusers build. Falling back to "
+        "raw RGB frames for pose_video AND face_video — the pose encoder will "
+        "mis-read this (it expects rendered skeletons), so motion adherence "
+        "will be poor. Wire DWPose + face-crop preprocessing for real output."
+    )
+    return driving, driving
+
+
 def write_contact_sheet(frames: list[Image.Image], out_path: Path, every: int = 8) -> None:
     sample = frames[::every] or frames[:1]
     cols = 4
@@ -170,36 +232,26 @@ def main():
     driving = [_center_crop_to_aspect(f, W, H) for f in _load_driving_clip(src_path, n, g["fps_generate"], log)]
     generator = torch.Generator(device="cpu").manual_seed(int(cfg["seed"]))
 
-    # Diffusers main is iterating on Wan-Animate's call signature — kwarg names
-    # have changed across commits (image / reference_image / first_frame for
-    # the identity, video / driving_video / pose_video for the motion). Pick
-    # whichever names this build actually accepts so we don't have to chase
-    # the API by hand on every diffusers bump.
+    # Wan-Animate's diffusers signature splits the driving signal into two
+    # required conditioning videos — `pose_video` (rendered skeleton frames)
+    # and `face_video` (face crops) — plus the `image` reference. Wan's own
+    # inference repo ships a preprocess script that produces both from a raw
+    # RGB driving clip; diffusers exposes that as WanAnimateProcessor (or a
+    # `prepare_inputs` helper) on recent commits. Try the processor first;
+    # if it isn't there, fall back to feeding the same raw RGB driving frames
+    # to both slots (lossy: the body pose encoder expects rendered skeletons,
+    # not raw RGB, so quality will suffer until we wire real preprocessing).
     sig = inspect.signature(pipe.__call__)
     params = set(sig.parameters.keys())
     log.info(f"WanAnimatePipeline.__call__ params: {sorted(params)}")
 
-    ref_kw = next((n for n in ("reference_image", "image", "ref_image", "first_frame") if n in params), None)
-    drv_kw = next((n for n in ("driving_video", "video", "pose_video", "conditioning_video", "control_video") if n in params), None)
-    if ref_kw is None or drv_kw is None:
-        log.error(
-            "Could not map (reference, driving) to WanAnimatePipeline kwargs. "
-            f"Pipeline accepts: {sorted(params)}. "
-            "Pick the right names and update this stage's __call__."
-        )
-        sys.exit(1)
-    log.info(f"using kwargs: {ref_kw}=<reference>, {drv_kw}=<driving>")
+    pose_video, face_video = _prepare_animate_conditioning(pipe, driving, log)
 
-    # Wan-Animate has no num_frames kwarg — output length is dictated by the
-    # pose_video length we pass in. We've already padded `driving` to exactly
-    # `n` frames upstream so the output matches generation.duration_sec.
-    # mode="animation" = render the reference person doing the driving motion;
-    # mode="replacement" = swap the person in the driving video for the
-    # reference (different use case, would also need mask_video/background_video).
-    log.info(f"running Wan-Animate: {len(driving)} frames @ {W}x{H}, mode=animation, steps={g['steps']}…")
+    log.info(f"running Wan-Animate: {len(pose_video)} frames @ {W}x{H}, mode=animation, steps={g['steps']}…")
     call_kwargs = {
-        ref_kw: reference,
-        drv_kw: driving,
+        "image": reference,
+        "pose_video": pose_video,
+        "face_video": face_video,
         "prompt": g["prompt"],
         "negative_prompt": g["negative_prompt"],
         "height": H,
