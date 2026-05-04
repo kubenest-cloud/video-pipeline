@@ -1,0 +1,27 @@
+# Keep docker build context small. Build context = repo root.
+**/.venv
+**/__pycache__
+**/*.pyc
+**/*.pyo
+**/.pytest_cache
+**/.mypy_cache
+
+.git
+.gitignore
+.idea
+.vscode
+.claude
+
+# Per-run artifacts; mounted at runtime.
+outputs
+inputs
+
+# RIFE checkout (large, only stage 4 uses it).
+stages/04_interpolate/third_party
+
+# uv caches mounted via BuildKit cache mount, not copied.
+.cache
+
+# Misc
+*.log
+*.tmp

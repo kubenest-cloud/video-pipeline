@@ -1,0 +1,10 @@
+[project]
+name = "video-pipeline-common"
+version = "0.1.0"
+description = "Shared utilities (paths, config, logging) for video-pipeline stages."
+requires-python = ">=3.11,<3.12"
+dependencies = ["pyyaml>=6.0.2"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

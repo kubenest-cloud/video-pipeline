@@ -1,0 +1,11 @@
+[project]
+name = "stage-05-encode"
+version = "0.1.0"
+description = "Encode interpolated frames to final mp4/h265/gif via ffmpeg."
+requires-python = ">=3.11,<3.12"
+dependencies = [
+    "video-pipeline-common",
+]
+
+[tool.uv.sources]
+video-pipeline-common = { path = "../../packages/common", editable = true }

@@ -1,0 +1,49 @@
+# All knobs in one place. Override per-run with --config or by editing this file.
+run_id: smoke_07
+seed: 42
+
+input:
+  pose_source: inputs/pose_source.mp4 # mp4 or directory of frames
+  face_ref: inputs/face_ref.png
+
+generation:
+  base_model: SG161222/Realistic_Vision_V6.0_B1_noVAE
+  motion_adapter: guoyww/animatediff-motion-adapter-v1-5-3
+  controlnet: lllyasviel/control_v11p_sd15_openpose
+  ip_adapter_repo: h94/IP-Adapter-FaceID
+  # Plus v2 fuses InsightFace ID embedding with CLIP-H image features through a
+  # Perceiver Resampler. Far stronger gender/ethnicity preservation than basic
+  # FaceID — basic FaceID was flipping gender on under-specified prompts.
+  ip_adapter_weight: ip-adapter-faceid-plusv2_sd15.bin
+  ip_adapter_image_encoder: laion/CLIP-ViT-H-14-laion2B-s32B-b79K
+
+  width: 512
+  height: 512
+  steps: 25
+  guidance_scale: 7.5
+  controlnet_scale: 0.8
+  ip_adapter_scale: 1.0
+
+  context_frames: 16
+  context_overlap: 4
+
+  fps_generate: 8
+  duration_sec: 10 # → 80 frames at 8 FPS
+
+  prompt:
+    'photo of an asian man, cinematic lighting, sharp focus, detailed skin, 35mm'
+  negative_prompt:
+    'woman, female, feminine, deformed, blurry, low quality, extra limbs, bad
+    anatomy, watermark, text'
+
+interpolation:
+  target_fps: 24
+  rife_repo: https://github.com/hzwer/Practical-RIFE.git
+  rife_model: 4.18
+
+encode:
+  codec: libx264
+  crf: 18
+  pix_fmt: yuv420p
+  also_h265: true
+  preview_gif: true

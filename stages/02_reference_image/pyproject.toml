@@ -1,0 +1,41 @@
+[project]
+name = "stage-02-reference-image"
+version = "0.1.0"
+description = "Face embedding (insightface) + IPAdapter FaceID preview grid."
+requires-python = ">=3.11,<3.12"
+dependencies = [
+    # transformers 4.57+ refuses to torch.load on torch<2.6 (CVE-2025-32434).
+    # Stage 1's mmcv ABI lock to torch 2.4.1 doesn't apply here — bump freely.
+    "torch==2.6.0",
+    "torchvision==0.21.0",
+    # diffusers 0.37+ registers flash-attn-3 ops with PEP 604 union annotations
+    # that torch 2.4.1's infer_schema can't parse. Pin to the 0.31 line.
+    "diffusers>=0.31.0,<0.32.0",
+    "transformers>=4.45.0,<5.0",
+    "accelerate>=1.0.0",
+    "peft>=0.7.0",
+    "safetensors>=0.4.5",
+    "huggingface-hub>=0.25.0",
+    "insightface>=0.7.3",
+    "onnxruntime-gpu>=1.19.0",
+    "opencv-python-headless>=4.10.0.84",
+    "pillow>=10.4.0",
+    "numpy>=1.26,<2.0",
+    "einops>=0.8.0",
+    "video-pipeline-common",
+]
+
+[tool.uv]
+environments = ["sys_platform == 'linux' and platform_machine == 'x86_64'"]
+
+# cu121 wheels topped out at torch 2.5.1; torch 2.6+ ships cu124 only.
+# Wheel-bundled cuda libs make this independent of the docker base image's CUDA version.
+[[tool.uv.index]]
+name = "pytorch-cu124"
+url = "https://download.pytorch.org/whl/cu124"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu124" }
+torchvision = { index = "pytorch-cu124" }
+video-pipeline-common = { path = "../../packages/common", editable = true }

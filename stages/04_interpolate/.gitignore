@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Practical-RIFE checkout (cloned on first run) and its model weights.
+third_party/

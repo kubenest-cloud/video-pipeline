@@ -1,0 +1,20 @@
+.venv/
+stages/*/.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pt
+*.safetensors
+*.ckpt
+.DS_Store
+.idea/
+.vscode/
+
+outputs/
+inputs/*
+!inputs/.gitkeep
+
+.cache/
+
+# RIFE checkout (per-stage)
+stages/04_interpolate/third_party/
