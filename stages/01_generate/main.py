@@ -11,6 +11,7 @@ Outputs (consumed by stage 2):
 """
 from __future__ import annotations
 
+import inspect
 import sys
 from pathlib import Path
 
@@ -168,10 +169,30 @@ def main():
 
     driving = [_center_crop_to_aspect(f, W, H) for f in _load_driving_clip(src_path, n, g["fps_generate"], log)]
     generator = torch.Generator(device="cpu").manual_seed(int(cfg["seed"]))
+
+    # Diffusers main is iterating on Wan-Animate's call signature — kwarg names
+    # have changed across commits (image / reference_image / first_frame for
+    # the identity, video / driving_video / pose_video for the motion). Pick
+    # whichever names this build actually accepts so we don't have to chase
+    # the API by hand on every diffusers bump.
+    sig = inspect.signature(pipe.__call__)
+    params = set(sig.parameters.keys())
+    log.info(f"WanAnimatePipeline.__call__ params: {sorted(params)}")
+
+    ref_kw = next((n for n in ("reference_image", "image", "ref_image", "first_frame") if n in params), None)
+    drv_kw = next((n for n in ("driving_video", "video", "pose_video", "conditioning_video", "control_video") if n in params), None)
+    if ref_kw is None or drv_kw is None:
+        log.error(
+            "Could not map (reference, driving) to WanAnimatePipeline kwargs. "
+            f"Pipeline accepts: {sorted(params)}. "
+            "Pick the right names and update this stage's __call__."
+        )
+        sys.exit(1)
+    log.info(f"using kwargs: {ref_kw}=<reference>, {drv_kw}=<driving>")
+
     log.info(f"running Wan-Animate: {n} frames @ {W}x{H}, steps={g['steps']}…")
     out = pipe(
-        reference_image=reference,
-        driving_video=driving,
+        **{ref_kw: reference, drv_kw: driving},
         prompt=g["prompt"],
         negative_prompt=g["negative_prompt"],
         height=H,
