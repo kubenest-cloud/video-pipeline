@@ -190,18 +190,27 @@ def main():
         sys.exit(1)
     log.info(f"using kwargs: {ref_kw}=<reference>, {drv_kw}=<driving>")
 
-    log.info(f"running Wan-Animate: {n} frames @ {W}x{H}, steps={g['steps']}…")
-    out = pipe(
-        **{ref_kw: reference, drv_kw: driving},
-        prompt=g["prompt"],
-        negative_prompt=g["negative_prompt"],
-        height=H,
-        width=W,
-        num_frames=n,
-        num_inference_steps=g["steps"],
-        guidance_scale=g["guidance_scale"],
-        generator=generator,
-    )
+    # Wan-Animate has no num_frames kwarg — output length is dictated by the
+    # pose_video length we pass in. We've already padded `driving` to exactly
+    # `n` frames upstream so the output matches generation.duration_sec.
+    # mode="animation" = render the reference person doing the driving motion;
+    # mode="replacement" = swap the person in the driving video for the
+    # reference (different use case, would also need mask_video/background_video).
+    log.info(f"running Wan-Animate: {len(driving)} frames @ {W}x{H}, mode=animation, steps={g['steps']}…")
+    call_kwargs = {
+        ref_kw: reference,
+        drv_kw: driving,
+        "prompt": g["prompt"],
+        "negative_prompt": g["negative_prompt"],
+        "height": H,
+        "width": W,
+        "num_inference_steps": g["steps"],
+        "guidance_scale": g["guidance_scale"],
+        "generator": generator,
+    }
+    if "mode" in params:
+        call_kwargs["mode"] = "animation"
+    out = pipe(**call_kwargs)
 
     frames: list[Image.Image] = out.frames[0]
     log.info(f"writing {len(frames)} frames to {paths.raw_frames}")
