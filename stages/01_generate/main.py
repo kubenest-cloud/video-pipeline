@@ -149,6 +149,46 @@ def _prepare_animate_conditioning(
     return driving, driving
 
 
+def _coerce_to_pil_list(raw, log) -> list[Image.Image]:
+    """Normalize whatever the pipeline returned into list[PIL.Image].
+
+    Wan-Animate's diffusers integration is in flux: `out.frames[0]` is
+    sometimes list[PIL] (when output_type='pil' is honored), sometimes a
+    numpy array of shape (T, H, W, 3) or (T, 3, H, W), sometimes a torch
+    tensor in [0, 1]. Don't assume — coerce.
+    """
+    # Already a list of PIL.
+    if isinstance(raw, list) and raw and isinstance(raw[0], Image.Image):
+        return raw
+
+    # torch tensor → numpy
+    if hasattr(raw, "detach") and hasattr(raw, "cpu"):
+        raw = raw.detach().cpu().float().numpy()
+
+    arr = np.asarray(raw)
+    log.info(f"coercing pipeline output: shape={arr.shape}, dtype={arr.dtype}")
+
+    # (T, 3, H, W) → (T, H, W, 3)
+    if arr.ndim == 4 and arr.shape[1] == 3 and arr.shape[-1] != 3:
+        arr = np.transpose(arr, (0, 2, 3, 1))
+
+    if arr.ndim != 4 or arr.shape[-1] != 3:
+        raise RuntimeError(
+            f"unexpected pipeline output shape {arr.shape}; "
+            f"expected (T, H, W, 3). Raw is dumped to _raw_output.npz."
+        )
+
+    # Normalize value range. uint8 stays as-is; floats in [0,1] scale to 255;
+    # floats in [-1,1] (rare) get re-centered first.
+    if arr.dtype != np.uint8:
+        if arr.min() < -0.05:  # pretty clearly [-1, 1]
+            arr = (arr + 1.0) * 0.5
+        arr = np.clip(arr * 255.0, 0, 255).astype(np.uint8) if arr.max() <= 1.5 else \
+              np.clip(arr,         0, 255).astype(np.uint8)
+
+    return [Image.fromarray(frame) for frame in arr]
+
+
 def write_contact_sheet(frames: list[Image.Image], out_path: Path, every: int = 8) -> None:
     sample = frames[::every] or frames[:1]
     cols = 4
@@ -265,9 +305,22 @@ def main():
         # driving motion) and "replace" (swap the person in the driving video
         # for the reference; needs mask_video + background_video).
         call_kwargs["mode"] = "animate"
+    if "output_type" in params:
+        call_kwargs["output_type"] = "pil"
     out = pipe(**call_kwargs)
 
-    frames: list[Image.Image] = out.frames[0]
+    raw_out = out.frames[0]
+
+    # Dump the raw output BEFORE any post-processing — Wan-Animate runs ~13
+    # min per pass on this clip, and a save-loop bug shouldn't be able to
+    # waste that compute. Recover frames from this with `np.load(...)['arr_0']`
+    # and re-run any of the post steps below independently.
+    raw_dump = paths.raw_frames / "_raw_output.npz"
+    raw_arr = np.asarray([np.asarray(f) for f in raw_out]) if not isinstance(raw_out, np.ndarray) else raw_out
+    np.savez_compressed(raw_dump, arr_0=raw_arr)
+    log.info(f"dumped raw output ({raw_arr.shape}, dtype={raw_arr.dtype}) → {raw_dump}")
+
+    frames = _coerce_to_pil_list(raw_out, log)
     log.info(f"writing {len(frames)} frames to {paths.raw_frames}")
     for i, fr in enumerate(frames, start=1):
         fr.save(paths.raw_frames / f"{i:04d}.png")
