@@ -1,7 +1,7 @@
-"""Run all 5 stages end-to-end. Each stage runs in its own uv-managed venv.
+"""Run all 3 stages end-to-end. Each stage runs in its own uv-managed venv.
 
 Prefer running stages individually while debugging:
-    uv run --project stages/03_generate python main.py --config ../../config.yaml
+    uv run --project stages/01_generate python main.py --config ../../config.yaml
 """
 from __future__ import annotations
 
@@ -15,11 +15,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 STAGES = [
-    ("stages/01_extract_poses",   "01 extract_poses"),
-    ("stages/02_reference_image", "02 reference_image"),
-    ("stages/03_generate",        "03 generate"),
-    ("stages/04_interpolate",     "04 interpolate"),
-    ("stages/05_encode",          "05 encode"),
+    ("stages/01_generate",     "01 generate"),
+    ("stages/02_interpolate",  "02 interpolate"),
+    ("stages/03_encode",       "03 encode"),
 ]
 
 

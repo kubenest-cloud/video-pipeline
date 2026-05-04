@@ -1,0 +1,42 @@
+[project]
+name = "stage-03-generate"
+version = "0.1.0"
+description = "Wan 2.2 Animate generation — pose-driven photoreal video from a reference image."
+requires-python = ">=3.11,<3.12"
+dependencies = [
+    # Wan 2.2 was trained in bf16; on Ada/Ampere bf16 needs torch >=2.4. We
+    # pin 2.6 to match stage 2/3 (so the HF cache can be shared) and to keep
+    # the cu124 wheels consistent.
+    "torch==2.6.0",
+    "torchvision==0.21.0",
+    # Wan 2.2 pipelines (WanImageToVideoPipeline, WanAnimatePipeline) landed
+    # in diffusers 0.34. Pin a known-good range; >=0.36 dropped the legacy
+    # `vae_tiling` flag we rely on for 48GB cards.
+    "diffusers>=0.34.0,<0.36.0",
+    # Wan ships its T5 text encoder via transformers; >=4.46 is the version
+    # the Wan-AI repos test against.
+    "transformers>=4.46.0,<5.0",
+    "accelerate>=1.0.0",
+    "safetensors>=0.4.5",
+    "huggingface-hub>=0.25.0",
+    # Wan's tokenizer needs ftfy for unicode normalization.
+    "ftfy>=6.2.0",
+    "imageio[ffmpeg,pyav]>=2.36.0",
+    "pillow>=10.4.0",
+    "numpy>=1.26,<2.0",
+    "einops>=0.8.0",
+    "video-pipeline-common",
+]
+
+[tool.uv]
+environments = ["sys_platform == 'linux' and platform_machine == 'x86_64'"]
+
+[[tool.uv.index]]
+name = "pytorch-cu124"
+url = "https://download.pytorch.org/whl/cu124"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu124" }
+torchvision = { index = "pytorch-cu124" }
+video-pipeline-common = { path = "../../packages/common", editable = true }

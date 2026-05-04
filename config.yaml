@@ -1,42 +1,26 @@
 # All knobs in one place. Override per-run with --config or by editing this file.
-run_id: smoke_13
+run_id: smoke_14
 seed: 42
 
 input:
-  pose_source: inputs/pose_source.mp4 # mp4 or directory of frames
-  face_ref: inputs/face_ref.png
+  pose_source: inputs/pose_source.mp4 # mp4 or directory of frames; drives motion
+  face_ref: inputs/face_ref.png # single-image identity reference
 
 generation:
-  base_model: SG161222/Realistic_Vision_V6.0_B1_noVAE
-  motion_adapter: guoyww/animatediff-motion-adapter-v1-5-3
-  controlnet: lllyasviel/control_v11p_sd15_openpose
-  ip_adapter_repo: h94/IP-Adapter-FaceID
-  # Plus v2 fuses InsightFace ID embedding with CLIP-H image features through a
-  # Perceiver Resampler. Far stronger gender/ethnicity preservation than basic
-  # FaceID — basic FaceID was flipping gender on under-specified prompts.
-  ip_adapter_weight: ip-adapter-faceid-plusv2_sd15.bin
-  ip_adapter_image_encoder: laion/CLIP-ViT-H-14-laion2B-s32B-b79K
+  # Purpose-built ref-image + driving-video character animator. ~28 GB d/l on
+  # first run (cached under HF_HOME). Diffusers-format repo with the
+  # config.json + sharded safetensors layout the diffusers loader expects.
+  model: Wan-AI/Wan2.2-Animate-14B-Diffusers
+  # Used only if WanAnimatePipeline isn't in the installed diffusers build.
+  # Loses pose adherence (no in-model pose extractor) but keeps photoreal.
+  i2v_fallback_model: Wan-AI/Wan2.2-I2V-A14B-Diffusers
 
   width: 512
   height: 768
-  steps: 25
-  # AnimateDiff motion adapter pulls toward stylized output; high CFG (7.5)
-  # then burns saturation and pushes the look further into "painterly". 5.5
-  # lets Realistic Vision's photo training reassert itself.
-  guidance_scale: 5.5
-  # smoke_11: at 0.5 the model reinterpreted clearly-frontal skeletons as
-  # profile views (head + horizontal shoulders + both arms visible got
-  # rendered side-on). 0.75 restores body-orientation adherence while still
-  # letting SD render the face freely (face landmarks are stripped in stage 1
-  # and the detailer pass owns face quality, so we don't need 0.8 anymore).
-  controlnet_scale: 0.75
-  # Lowered from 1.0 — combined with Plus v2 CLIP shortcut at scale 1.0, full
-  # IP-Adapter strength was over-injecting the close-up face crop into every
-  # cross-attn and washing out the spatial composition. 0.7 is the sweet spot.
-  ip_adapter_scale: 0.7
-
-  context_frames: 16
-  context_overlap: 4
+  # Wan was tuned for low-CFG sampling — 5 is the sweet spot per their docs.
+  # Higher than 6 visibly oversaturates and stiffens motion.
+  guidance_scale: 5.0
+  steps: 30
 
   fps_generate: 8
   duration_sec: 10 # → 80 frames at 8 FPS

@@ -31,8 +31,6 @@ REPO_ROOT = _repo_root()
 @dataclass
 class Paths:
     run_dir: Path
-    poses: Path
-    reference: Path
     raw_frames: Path
     interpolated: Path
     final_mp4: Path
@@ -43,8 +41,6 @@ class Paths:
         run_dir = REPO_ROOT / "outputs" / run_id
         return cls(
             run_dir=run_dir,
-            poses=run_dir / "poses",
-            reference=run_dir / "reference",
             raw_frames=run_dir / "raw_frames",
             interpolated=run_dir / "interpolated",
             final_mp4=run_dir / "final.mp4",
